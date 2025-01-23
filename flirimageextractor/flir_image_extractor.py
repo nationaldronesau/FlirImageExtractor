@@ -10,6 +10,7 @@ from PIL import Image, ImageEnhance
 from loguru import logger
 from matplotlib import pyplot as plt, cm
 from flirimageextractor.thermal_base import ThermalImage
+from flirimageextractor.thermal import Thermal
 class FlirImageExtractor:
     """
     Instance of FlirImageExtractor
@@ -95,19 +96,22 @@ class FlirImageExtractor:
         # if bytesIO then save the image file to the class variable
         self.loadfile(flir_img_file)
 
-        # if its a TIFF different settings are required
-        if self.get_image_type().upper().strip() == "TIFF":
-            # valid for tiff images from Zenmuse XTR
-            self.use_thumbnail = True
-            self.fix_endian = False
-        if self.get_image_type().upper().strip() == "DJI":
-            # valid for radiometric format thermal camera images from DJI Zenmuse ZH20T camera
-            image = ThermalImage(image_path=flir_img_file, camera_manufacturer="dji")
-            self.thermal_image_np  = image.thermal_np   
-        else:
+        # Initialize the Thermal object
+        thermal = Thermal(dtype=np.float32)
 
-            # extract the thermal image and set it to the class variable
-            self.thermal_image_np = self.extract_thermal_image()
+        # Parse the image to get the temperature array
+        temperature = thermal.parse(filepath_image=flir_img_file)
+
+        self.thermal_image_np  = temperature
+
+        # Print the temperature array and print the min and max temperatures (optional, for debugging)
+        # print(temperature)
+        # min_temp = np.min(temperature)
+        # max_temp = np.max(temperature)
+
+        # print(f"Min temperature: {min_temp}")
+        # print(f"Max temperature: {max_temp}")
+        # print(f"Shape: {temperature.shape}")
 
         if RGB:
             self.rgb_image_np = self.extract_embedded_image()
@@ -231,6 +235,7 @@ class FlirImageExtractor:
             meta_json, err = p.communicate(input=self.flir_img_bytes.read())
 
         meta = json.loads(meta_json.decode())[0]
+        # print(meta)
 
         # use exiftool to extract the thermal images
         if self.flir_img_filename:

@@ -55,6 +55,15 @@ The CLI is able to output 3 folders of images with the `bwr`, `gnuplot`, and `gi
 - Xenmuse XTR (thermal + thumbnail, set the subject distance to 1 meter)
 - AX8 (thermal + RGB)
 - DJI Zenmuse H20T Camera (ZH20T)
+- DJI_XT2 = 'XT2'
+- DJI_XTS = 'XT S'
+- FLIR_B60 = 'Flir b60'
+- FLIR_E40 = 'FLIR E40'
+- FLIR_T640 = 'FLIR T640'
+- DJI_M2EA = 'MAVIC2-ENTERPRISE-ADVANCED'
+- DJI_H20N = 'ZH20N'
+- DJI_M3T = 'M3T'
+- DJI_M30T = 'M30T'
 
 Other cameras might need some small tweaks (the embedded raw data can be in multiple image formats). Let me know if you succesfully use other cameras so they can be added to this list.
 

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "flirimageextractor"
-version = "1.5.7"
+version = "1.5.8"
 description = "A small tool/lib to read temperatures and original photos from FLIR® thermal camera images."
 authors = [
     "National Drones <development@nationaldrones.com>",

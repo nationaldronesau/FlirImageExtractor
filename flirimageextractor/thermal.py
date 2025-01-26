@@ -22,6 +22,8 @@ import sys
 from ctypes import *
 from io import BufferedIOBase, BytesIO
 from typing import BinaryIO, Dict, List, Optional, Tuple, Union
+import requests, zipfile, io
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -37,23 +39,71 @@ DIRP_VERBOSE_LEVEL_DETAIL = 2  # 2: Print all log
 DIRP_VERBOSE_LEVEL_NUM = 3  # 3: Total number
 
 
-def get_default_filepaths() -> List[str]:
-    folder_plugin = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'plugins')
-    system = platform.system()
-    sdk = "dji_thermal_sdk_v1.5_20240507"
-    architecture = "x64" if platform.architecture()[0] == "64bit" else "x86"
-    extension = "so" if system == "Linux" else "dll"
-    exiftool = "exiftool" if system == "Linux" else f"{folder_plugin}/exiftool-12.35.exe"
-    files = [
-        f'{sdk}/{system.lower()}/release_{architecture}/libdirp.{extension}',
-        f'{sdk}/{system.lower()}/release_{architecture}/libv_dirp.{extension}',
-        f'{sdk}/{system.lower()}/release_{architecture}/libv_iirp.{extension}',
-    ]
-    if system not in ("Windows", "Linux") or architecture not in ("x64", "x86"):
-        raise NotImplementedError(f'currently not supported for running on this platform: {system} {architecture}')
-    
-    return *[os.path.join(folder_plugin, v) for v in files], exiftool
+def get_default_filepaths() -> Tuple[str, str, str, str]:
+    """
+    Get the default file paths for DJI Thermal SDK plugins and exiftool.
 
+    Returns:
+        Tuple[str, str, str, str]: Paths to libdirp, libv_dirp, libv_iirp, and exiftool.
+
+    Raises:
+        NotImplementedError: If the platform or architecture is unsupported.
+        RuntimeError: If there is an issue downloading or extracting the files.
+    """
+    try:
+        # Define base folder and plugin paths
+        base_folder = os.path.dirname(os.path.dirname(__file__))
+        dji_executables_folder = os.path.join(base_folder, "dji_executables")
+        sdk_folder = os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.7_20241205")
+        exiftool_exe = os.path.join(sdk_folder, "exiftool-12.35.exe")
+        dji_executables_url = (
+            "https://static.app.ndsmartdata.com/Thermal_Image_Analysis/DJI_SDK/dji_thermal_sdk_v1.7_20241205_v2.zip"
+        )
+
+        # If SDK folder isn't present, download the SDK and extract it
+        if not Path(sdk_folder).exists():
+            os.makedirs(dji_executables_folder, exist_ok=True)
+            response = requests.get(dji_executables_url, stream=True)
+
+            # Check for successful download
+            if response.status_code != 200:
+                raise RuntimeError(f"Failed to download DJI SDK files. HTTP Status: {response.status_code}")
+
+            # Extract the downloaded ZIP file
+            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                z.extractall(dji_executables_folder)
+
+        # Determine system and architecture details
+        system = platform.system()
+        architecture = "x64" if platform.architecture()[0] == "64bit" else "x86"
+        extension = "so" if system == "Linux" else "dll"
+        exiftool = "exiftool" if system == "Linux" else exiftool_exe
+
+        # Validate platform and architecture
+        if system not in ("Windows", "Linux"):
+            raise NotImplementedError(f"Unsupported platform: {system}")
+        if architecture not in ("x64", "x86"):
+            raise NotImplementedError(f"Unsupported architecture: {architecture}")
+
+        # Define file paths for SDK libraries
+        files = [
+            f"{system.lower()}/release_{architecture}/libdirp.{extension}",
+            f"{system.lower()}/release_{architecture}/libv_dirp.{extension}",
+            f"{system.lower()}/release_{architecture}/libv_iirp.{extension}",
+        ]
+
+        # Construct absolute paths to the SDK libraries
+        filepaths = [os.path.join(sdk_folder, file) for file in files]
+
+        # Return file paths as a tuple
+        return (*filepaths, exiftool)
+
+    except requests.RequestException as e:
+        raise RuntimeError(f"Network error while downloading DJI SDK: {e}")
+    except zipfile.BadZipFile as e:
+        raise RuntimeError(f"Error extracting DJI SDK ZIP file: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Error generating default file paths: {e}")
 
 
 class dirp_rjpeg_version_t(Structure):
@@ -440,18 +490,32 @@ class Thermal:
         }
 
         (
-            self._filepath_dirp,
-            self._filepath_dirp_sub,
-            self._filepath_iirp,
-            self._filepath_exiftool,
+                self._filepath_dirp,
+                self._filepath_dirp_sub,
+                self._filepath_iirp,
+                self._filepath_exiftool,
         ) = get_default_filepaths()
 
+        print("File paths successfully generated:")
+        print(f"DIRP: {self._filepath_dirp}")
+        print(f"DIRP Sub: {self._filepath_dirp_sub}")
+        print(f"IIRP: {self._filepath_iirp}")
+        print(f"ExifTool: {self._filepath_exiftool}")
+    
         try:
+            
             self._dll_dirp = CDLL(self._filepath_dirp)
             self._dll_dirp_sub = CDLL(self._filepath_dirp_sub)
             self._dll_iirp = CDLL(self._filepath_iirp)
-        except OSError:
-            print('Unable to load the system C library')
+
+        except NotImplementedError as nie:
+            print(f"Unsupported Configuration: {nie}")
+            sys.exit()
+        except RuntimeError as re:
+            print(f"Runtime Error: {re}")
+            sys.exit()
+        except Exception as e:
+            print(f"Unexpected Error Unable to load the system C library: {e}")
             sys.exit()
 
         # NOTE: The following code is for dji_thermal_sdk_v1.0

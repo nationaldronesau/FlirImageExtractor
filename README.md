@@ -12,38 +12,35 @@ This Python CLI that allows you to extract the original photo and thermal sensor
 
 ## Requirements and Install
 
-This tool relies on `exiftool`. It should be available in most Linux distributions (e.g. as `perl-image-exiftool` in Arch Linux or `libimage-exiftool-perl` in Debian and Ubuntu). Links for downloading the Mac version and more information is available on the [ExifTool site](https://sno.phy.queensu.ca/~phil/exiftool/index.html).
-To install on Linux:
+To install and Run on Linux and windows if repo is cloned:
 
 ```bash
-sudo apt update
-sudo apt install exiftool
+poetry install
+poetry run flir-image-extractor
 ```
 
-To install `exiftool` on Windows for use in this CLI, download the `exiftool` windows executable from [here](https://exiftool.org/exiftool-11.93.zip). Extract `exiftool(-k).exe` and rename to `exiftool.exe`. Copy this executable to `C:\Windows` on your computer. You will need admin permissions to do this. Doing this will make `exiftool` available to the CLI.
+You can install the CLI using pip:
 
-It also requires other python packages, *matplotlib*, *numpy* and *pillow*, which are installed when the CLI is installed through pip.
-
-Once you have install exiftool, you can install the CLI using pip:
 ```bash
-pip install flirimageextractor
-```
-On windows you may need to use:
-```bash
-python -m pip install flirimageextractor
+pip install flirimageextractor or pip install --upgrade flirimageextractor (windows)
 ```
 
-To update to the latest version of the CLI use this command. The first time you install the latest version will be automatically downloaded.
-```bash
-pip install --upgrade flirimageextractor
+## Usage: Sample Basic code Snppet
+
 ```
+import numpy as np
+from flirimageextractor import FlirImageExtractor
 
-## Usage
-
-You can start the CLI using the terminal.
-```bash
-flirimageextractor
-````
+flir = FlirImageExtractor()
+flir.process_image(flir_img_file='images/DJI_H20T.jpg')
+# Save processed images and extract thermal data
+images = flir.save_images(bytesIO=True)
+temperature = flir.get_thermal_np()
+# Calculate and upload thermal data
+max_temp, min_temp = np.amax(temperature), np.amin(temperature)
+print(max_temp)
+print(min_temp)
+```
 
 
 #### Resulting Plot and Saved Images
@@ -51,24 +48,30 @@ The CLI is able to output 3 folders of images with the `bwr`, `gnuplot`, and `gi
 
 ## Supported/Tested Cameras
 
-- Flir One (thermal + RGB)
-- Xenmuse XTR (thermal + thumbnail, set the subject distance to 1 meter)
-- AX8 (thermal + RGB)
-- DJI Zenmuse H20T Camera (ZH20T)
-- DJI_XT2 = 'XT2'
-- DJI_XTS = 'XT S'
-- FLIR_B60 = 'Flir b60'
-- FLIR_E40 = 'FLIR E40'
-- FLIR_T640 = 'FLIR T640'
-- DJI_M2EA = 'MAVIC2-ENTERPRISE-ADVANCED'
-- DJI_H20N = 'ZH20N'
-- DJI_M3T = 'M3T'
-- DJI_M30T = 'M30T'
+- FLIR R-JPEG Camera Model
+    - FLIR
+    - FLIR AX8
+    - FLIR B60
+    - FLIR E40
+    - FLIR T640
+
+- DJI R-JPEG Camera Model
+    - DJI H20T
+    - DJI XT2
+    - DJI XTR
+    - DJI XTS
+    - DJI R-JPEG Camera Model DTAT3.0
+
+- DJI M2EA / DJI MAVIC2-ENTERPRISE-ADVANCED
+    - DJI H20N
+    - DJI M3T / DJI MAVIC3
+    - DJI M30T
 
 Other cameras might need some small tweaks (the embedded raw data can be in multiple image formats). Let me know if you succesfully use other cameras so they can be added to this list.
 
 ## Development
-Install the required packages using [Pipenv](https://pipenv.kennethreitz.org/en/latest/). Then run `pre-commit install` to install the pre-commit hooks. Note that this tool is intended to work on Windows as well as Unix operating systems so use os.path functions to manipulate file paths instead of string manipulation.
+Install the required packages using [Poetry](https://python-poetry.org//). 
+Note that this tool is intended to work on Windows as well as Unix operating systems so use os.path functions to manipulate file paths instead of string manipulation.
 
 ## Build Command for Dev (uses poetry or twine)
 - python -m build --sdist --wheel
@@ -81,3 +84,4 @@ Install the required packages using [Pipenv](https://pipenv.kennethreitz.org/en/
 This CLi was developed using this repos:
 - https://github.com/Nervengift/read_thermal.py
 - https://github.com/detecttechnologies/thermal_base/
+- https://github.com/SanNianYiSi/thermal_parser/

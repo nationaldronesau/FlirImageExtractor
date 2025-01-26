@@ -24,3 +24,5 @@ thermal-data/
 
 build/
 .gitignore
+dji_executables
+images

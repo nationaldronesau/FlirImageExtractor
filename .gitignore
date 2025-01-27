@@ -26,3 +26,4 @@ build/
 .gitignore
 dji_executables
 images
+poetry.lock

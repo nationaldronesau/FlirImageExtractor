@@ -51,13 +51,16 @@ def get_default_filepaths() -> Tuple[str, str, str, str]:
         RuntimeError: If there is an issue downloading or extracting the files.
     """
     try:
+        # Determine system and architecture details
+        system = platform.system()
+
         # Define base folder and plugin paths
         base_folder = os.path.dirname(os.path.dirname(__file__))
         dji_executables_folder = os.path.join(base_folder, "dji_executables")
-        sdk_folder = os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.7_20241205")
+        sdk_folder = os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.4") if system == "Linux" else os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.7")
         exiftool_exe = os.path.join(sdk_folder, "exiftool-12.35.exe")
         dji_executables_url = (
-            "https://static.app.ndsmartdata.com/Thermal_Image_Analysis/DJI_SDK/dji_thermal_sdk_v1.7_20241205_v2.zip"
+            "https://static.app.ndsmartdata.com/Thermal_Image_Analysis/DJI_SDK/dji_thermal_sdk_flir_image_extractor_v1.5.9.zip"
         )
 
         # If SDK folder isn't present, download the SDK and extract it
@@ -73,8 +76,7 @@ def get_default_filepaths() -> Tuple[str, str, str, str]:
             with zipfile.ZipFile(io.BytesIO(response.content)) as z:
                 z.extractall(dji_executables_folder)
 
-        # Determine system and architecture details
-        system = platform.system()
+        # architecture details
         architecture = "x64" if platform.architecture()[0] == "64bit" else "x86"
         extension = "so" if system == "Linux" else "dll"
         exiftool = "exiftool" if system == "Linux" else exiftool_exe

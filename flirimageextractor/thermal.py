@@ -18,7 +18,6 @@ import os
 import re
 import platform
 import subprocess
-import sys
 from ctypes import *
 from io import BufferedIOBase, BytesIO
 from typing import BinaryIO, Dict, List, Optional, Tuple, Union
@@ -57,7 +56,9 @@ def get_default_filepaths() -> Tuple[str, str, str, str]:
         # Define base folder and plugin paths
         base_folder = os.path.dirname(os.path.dirname(__file__))
         dji_executables_folder = os.path.join(base_folder, "dji_executables")
-        sdk_folder = os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.4") if system == "Linux" else os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.7")
+        # H30-series R-JPEGs require DJI Thermal SDK 1.7. The SmartData
+        # distribution contains 1.7 binaries for both supported platforms.
+        sdk_folder = os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.7")
         exiftool_exe = os.path.join(sdk_folder, "exiftool-12.35.exe")
         dji_executables_url = (
             "https://static.app.ndsmartdata.com/Thermal_Image_Analysis/DJI_SDK/dji_thermal_sdk_flir_image_extractor_v1.5.9.zip"
@@ -437,6 +438,41 @@ class Thermal:
     DJI_H20N = 'ZH20N'
     DJI_M3T = 'M3T'
     DJI_M30T = 'M30T'
+    DJI_H30T = 'H30T'
+
+    DJI_DIRP2_CAMERA_MODELS = frozenset({
+        DJI_ZH20T,
+        DJI_XTS,
+        DJI_M2EA,
+        DJI_H20N,
+        DJI_M3T,
+        DJI_M30T,
+        DJI_H30T,
+    })
+    DJI_M2EA_MODELS = frozenset({
+        DJI_M2EA,
+        DJI_H20N,
+        DJI_M3T,
+        DJI_M30T,
+        DJI_H30T,
+    })
+    SUPPORTED_CAMERA_MODELS = frozenset({
+        DJI_XT2,
+        DJI_ZH20T,
+        DJI_XTS,
+        DJI_XTR,
+        FLIR_B60,
+        FLIR_E40,
+        FLIR_T640,
+        FLIR,
+        FLIR_DEFAULT,
+        FLIR_AX8,
+        DJI_M2EA,
+        DJI_H20N,
+        DJI_M3T,
+        DJI_M30T,
+        DJI_H30T,
+    })
 
     # dirp_ret_code_e
     DIRP_SUCCESS = 0  # 0: Success (no error)
@@ -483,13 +519,7 @@ class Thermal:
         assert dtype.__name__ in {np.float32.__name__, np.int16.__name__}
 
         self._dtype = dtype
-        self._support_camera_model = {
-            Thermal.DJI_XT2, Thermal.DJI_ZH20T, Thermal.DJI_XTS, Thermal.DJI_XTR,
-            Thermal.FLIR_B60, Thermal.FLIR_E40, Thermal.FLIR_T640,
-            Thermal.FLIR, Thermal.FLIR_DEFAULT, Thermal.FLIR_AX8,
-            Thermal.DJI_M2EA,
-            Thermal.DJI_H20N, Thermal.DJI_M3T, Thermal.DJI_M30T,
-        }
+        self._support_camera_model = set(Thermal.SUPPORTED_CAMERA_MODELS)
 
         (
                 self._filepath_dirp,
@@ -505,20 +535,45 @@ class Thermal:
         print(f"ExifTool: {self._filepath_exiftool}")
     
         try:
-            
-            self._dll_dirp = CDLL(self._filepath_dirp)
+            self._sdk_dependencies = []
+            if platform.system() == "Linux":
+                library_directory = os.path.dirname(self._filepath_dirp)
+                architecture_suffix = (
+                    "x64" if platform.architecture()[0] == "64bit" else "x86"
+                )
+                dependency_names = [
+                    "libexif.so.12",
+                    f"libMicroIA_Release_{architecture_suffix}.so",
+                    f"libMicroJPEG_Release_{architecture_suffix}.so",
+                    f"libMicroTA_Release_{architecture_suffix}.so",
+                    "libv_dirp.so",
+                    "libv_girp.so",
+                    "libv_hirp.so",
+                    "libv_iirp.so",
+                    "libv_cirp.so",
+                ]
+                for dependency_name in dependency_names:
+                    dependency_path = os.path.join(
+                        library_directory,
+                        dependency_name,
+                    )
+                    if os.path.exists(dependency_path):
+                        self._sdk_dependencies.append(
+                            CDLL(dependency_path, mode=RTLD_GLOBAL)
+                        )
+                self._dll_dirp = CDLL(
+                    self._filepath_dirp,
+                    mode=RTLD_GLOBAL,
+                )
+            else:
+                self._dll_dirp = CDLL(self._filepath_dirp)
+
             self._dll_dirp_sub = CDLL(self._filepath_dirp_sub)
             self._dll_iirp = CDLL(self._filepath_iirp)
-
-        except NotImplementedError as nie:
-            print(f"Unsupported Configuration: {nie}")
-            sys.exit()
-        except RuntimeError as re:
-            print(f"Runtime Error: {re}")
-            sys.exit()
-        except Exception as e:
-            print(f"Unexpected Error Unable to load the system C library: {e}")
-            sys.exit()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to load the DJI Thermal SDK: {exc}"
+            ) from exc
 
         # NOTE: The following code is for dji_thermal_sdk_v1.0
         # # Register SDK for the application.
@@ -649,15 +704,7 @@ class Thermal:
                 filepath_image=filepath_image,
                 **kwargs,
             )
-        elif camera_model in {
-            Thermal.DJI_ZH20T,
-            Thermal.DJI_XTS,
-
-            Thermal.DJI_M2EA,
-            Thermal.DJI_H20N,
-            Thermal.DJI_M3T,
-            Thermal.DJI_M30T,
-        }:
+        elif camera_model in Thermal.DJI_DIRP2_CAMERA_MODELS:
             for key in ['Image Height', 'Image Width']:
                 assert key in meta_json, f'The `{key}` field is missing'
             kwargs = dict((name, float(re.findall(r'\d+\.\d+|\d+', meta_json[key])[0])) for name, key in [
@@ -666,19 +713,14 @@ class Thermal:
                 ('emissivity', 'Emissivity'),
                 ('reflected_apparent_temperature', 'Reflected Temperature'),
             ] if key in meta_json)
-            # NOTE: the jpeg image of M30T has a fixed size of 640x512
-            if camera_model != Thermal.DJI_M30T:
+            # M30T and H30T dimensions are read from the R-JPEG by the SDK.
+            if camera_model not in {Thermal.DJI_M30T, Thermal.DJI_H30T}:
                 kwargs['image_height'] = int(meta_json['Image Height'])
                 kwargs['image_width'] = int(meta_json['Image Width'])
             if 'emissivity' in kwargs:
                 kwargs['emissivity'] /= 100
-            if camera_model in [
-                Thermal.DJI_M2EA,
-                Thermal.DJI_H20N,
-                Thermal.DJI_M3T,
-                Thermal.DJI_M30T,
-            ]:
-                kwargs['m2ea_mode'] = True,
+            if camera_model in Thermal.DJI_M2EA_MODELS:
+                kwargs['m2ea_mode'] = True
             return self.parse_dirp2(
                 filepath_image=filepath_image,
                 **kwargs,
@@ -860,6 +902,12 @@ class Thermal:
         assert return_status == Thermal.DIRP_SUCCESS, f'dirp_create_from_rjpeg error {filepath_image}:{return_status}'
         assert self._dirp_get_rjpeg_version(handle, rjpeg_version) == Thermal.DIRP_SUCCESS
         assert self._dirp_get_rjpeg_resolution(handle, rjpeg_resolotion) == Thermal.DIRP_SUCCESS
+        image_width = int(rjpeg_resolotion.width)
+        image_height = int(rjpeg_resolotion.height)
+        assert image_width > 0 and image_height > 0, (
+            f'dirp_get_rjpeg_resolution returned an invalid size for '
+            f'{filepath_image}: {image_width}x{image_height}'
+        )
 
         if not m2ea_mode:
             params = dirp_measurement_params_t()

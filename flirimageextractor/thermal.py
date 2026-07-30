@@ -14,10 +14,13 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 """
 
+import hashlib
 import os
 import re
 import platform
 import subprocess
+import sys
+import tempfile
 from ctypes import *
 from io import BufferedIOBase, BytesIO
 from typing import BinaryIO, Dict, List, Optional, Tuple, Union
@@ -37,6 +40,14 @@ DIRP_VERBOSE_LEVEL_DEBUG = 1  # 1: Print debug log
 DIRP_VERBOSE_LEVEL_DETAIL = 2  # 2: Print all log
 DIRP_VERBOSE_LEVEL_NUM = 3  # 3: Total number
 
+DJI_EXECUTABLES_URL = (
+    "https://static.app.ndsmartdata.com/Thermal_Image_Analysis/"
+    "DJI_SDK/dji_thermal_sdk_flir_image_extractor_v1.5.9.zip"
+)
+DJI_EXECUTABLES_SHA256 = (
+    "7a8b7c44d8bbb56d134268ebdb902dc7115527e81e8fa2462abc67f12b17b3ab"
+)
+
 
 def get_default_filepaths() -> Tuple[str, str, str, str]:
     """
@@ -53,6 +64,20 @@ def get_default_filepaths() -> Tuple[str, str, str, str]:
         # Determine system and architecture details
         system = platform.system()
 
+        if system not in ("Windows", "Linux"):
+            raise NotImplementedError(f"Unsupported platform: {system}")
+
+        architecture_bits = platform.architecture()[0]
+        try:
+            architecture = {
+                "64bit": "x64",
+                "32bit": "x86",
+            }[architecture_bits]
+        except KeyError as exc:
+            raise NotImplementedError(
+                f"Unsupported architecture: {architecture_bits}"
+            ) from exc
+
         # Define base folder and plugin paths
         base_folder = os.path.dirname(os.path.dirname(__file__))
         dji_executables_folder = os.path.join(base_folder, "dji_executables")
@@ -60,33 +85,59 @@ def get_default_filepaths() -> Tuple[str, str, str, str]:
         # distribution contains 1.7 binaries for both supported platforms.
         sdk_folder = os.path.join(dji_executables_folder, "dji_thermal_sdk_v1.7")
         exiftool_exe = os.path.join(sdk_folder, "exiftool-12.35.exe")
-        dji_executables_url = (
-            "https://static.app.ndsmartdata.com/Thermal_Image_Analysis/DJI_SDK/dji_thermal_sdk_flir_image_extractor_v1.5.9.zip"
-        )
 
-        # If SDK folder isn't present, download the SDK and extract it
+        # Download to a temporary directory, verify the immutable artifact, then
+        # rename the complete SDK into place. A killed download can therefore
+        # never leave a half-populated directory that future calls accept.
         if not Path(sdk_folder).exists():
             os.makedirs(dji_executables_folder, exist_ok=True)
-            response = requests.get(dji_executables_url, stream=True)
+            response = requests.get(
+                DJI_EXECUTABLES_URL,
+                stream=True,
+                timeout=(15, 180),
+            )
+            response.raise_for_status()
+            archive = response.content
+            archive_sha256 = hashlib.sha256(archive).hexdigest()
+            if archive_sha256 != DJI_EXECUTABLES_SHA256:
+                raise RuntimeError(
+                    "DJI SDK download failed integrity verification: "
+                    f"expected {DJI_EXECUTABLES_SHA256}, got {archive_sha256}"
+                )
 
-            # Check for successful download
-            if response.status_code != 200:
-                raise RuntimeError(f"Failed to download DJI SDK files. HTTP Status: {response.status_code}")
+            with tempfile.TemporaryDirectory(
+                dir=dji_executables_folder
+            ) as temporary_directory:
+                with zipfile.ZipFile(io.BytesIO(archive)) as sdk_zip:
+                    extraction_root = os.path.realpath(temporary_directory)
+                    for member in sdk_zip.infolist():
+                        member_path = os.path.realpath(
+                            os.path.join(extraction_root, member.filename)
+                        )
+                        if os.path.commonpath(
+                            [extraction_root, member_path]
+                        ) != extraction_root:
+                            raise RuntimeError(
+                                f"Unsafe path in DJI SDK archive: {member.filename}"
+                            )
+                    sdk_zip.extractall(extraction_root)
 
-            # Extract the downloaded ZIP file
-            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                z.extractall(dji_executables_folder)
+                extracted_sdk_folder = os.path.join(
+                    extraction_root,
+                    "dji_thermal_sdk_v1.7",
+                )
+                if not os.path.isdir(extracted_sdk_folder):
+                    raise RuntimeError(
+                        "DJI SDK archive does not contain dji_thermal_sdk_v1.7"
+                    )
+                try:
+                    os.rename(extracted_sdk_folder, sdk_folder)
+                except FileExistsError:
+                    # Another worker completed the same atomic installation.
+                    pass
 
-        # architecture details
-        architecture = "x64" if platform.architecture()[0] == "64bit" else "x86"
         extension = "so" if system == "Linux" else "dll"
         exiftool = "exiftool" if system == "Linux" else exiftool_exe
-
-        # Validate platform and architecture
-        if system not in ("Windows", "Linux"):
-            raise NotImplementedError(f"Unsupported platform: {system}")
-        if architecture not in ("x64", "x86"):
-            raise NotImplementedError(f"Unsupported architecture: {architecture}")
 
         # Define file paths for SDK libraries
         files = [
@@ -97,6 +148,26 @@ def get_default_filepaths() -> Tuple[str, str, str, str]:
 
         # Construct absolute paths to the SDK libraries
         filepaths = [os.path.join(sdk_folder, file) for file in files]
+        required_filepaths = list(filepaths)
+        if system == "Linux":
+            required_filepaths.append(
+                os.path.join(
+                    sdk_folder,
+                    f"linux/release_{architecture}/libv_hirp.so",
+                )
+            )
+        else:
+            required_filepaths.append(exiftool_exe)
+        missing_filepaths = [
+            filepath
+            for filepath in required_filepaths
+            if not Path(filepath).exists()
+        ]
+        if missing_filepaths:
+            raise RuntimeError(
+                "DJI Thermal SDK installation is incomplete; missing: "
+                + ", ".join(missing_filepaths)
+            )
 
         # Return file paths as a tuple
         return (*filepaths, exiftool)
@@ -898,49 +969,116 @@ class Thermal:
         rjpeg_version = dirp_rjpeg_version_t()
         rjpeg_resolotion = dirp_resolotion_t()
 
-        return_status = self._dirp_create_from_rjpeg(raw_c_uint8, raw_size, handle)
-        assert return_status == Thermal.DIRP_SUCCESS, f'dirp_create_from_rjpeg error {filepath_image}:{return_status}'
-        assert self._dirp_get_rjpeg_version(handle, rjpeg_version) == Thermal.DIRP_SUCCESS
-        assert self._dirp_get_rjpeg_resolution(handle, rjpeg_resolotion) == Thermal.DIRP_SUCCESS
-        image_width = int(rjpeg_resolotion.width)
-        image_height = int(rjpeg_resolotion.height)
-        assert image_width > 0 and image_height > 0, (
-            f'dirp_get_rjpeg_resolution returned an invalid size for '
-            f'{filepath_image}: {image_width}x{image_height}'
+        return_status = self._dirp_create_from_rjpeg(
+            raw_c_uint8,
+            raw_size,
+            handle,
         )
+        if return_status != Thermal.DIRP_SUCCESS:
+            raise RuntimeError(
+                f"dirp_create_from_rjpeg failed for {filepath_image}: "
+                f"{return_status}"
+            )
 
-        if not m2ea_mode:
-            params = dirp_measurement_params_t()
-            params_point = pointer(params)
-            return_status = self._dirp_get_measurement_params(handle, params_point)
-            assert return_status == Thermal.DIRP_SUCCESS, f'dirp_get_measurement_params error {filepath_image}:{return_status}'
+        try:
+            return_status = self._dirp_get_rjpeg_version(handle, rjpeg_version)
+            if return_status != Thermal.DIRP_SUCCESS:
+                raise RuntimeError(
+                    f"dirp_get_rjpeg_version failed for {filepath_image}: "
+                    f"{return_status}"
+                )
 
-            if isinstance(object_distance, (float, int)):
-                params.distance = object_distance
-            if isinstance(relative_humidity, (float, int)):
-                params.humidity = relative_humidity
-            if isinstance(emissivity, (float, int)):
-                params.emissivity = emissivity
-            if isinstance(reflected_apparent_temperature, (float, int)):
-                params.reflection = reflected_apparent_temperature
+            return_status = self._dirp_get_rjpeg_resolution(
+                handle,
+                rjpeg_resolotion,
+            )
+            if return_status != Thermal.DIRP_SUCCESS:
+                raise RuntimeError(
+                    f"dirp_get_rjpeg_resolution failed for {filepath_image}: "
+                    f"{return_status}"
+                )
+            image_width = int(rjpeg_resolotion.width)
+            image_height = int(rjpeg_resolotion.height)
+            if image_width <= 0 or image_height <= 0:
+                raise RuntimeError(
+                    "dirp_get_rjpeg_resolution returned an invalid size for "
+                    f"{filepath_image}: {image_width}x{image_height}"
+                )
 
-            return_status = self._dirp_set_measurement_params(handle, params)
-            assert return_status == Thermal.DIRP_SUCCESS, f'dirp_set_measurement_params error {filepath_image}:{return_status}'
+            if not m2ea_mode:
+                params = dirp_measurement_params_t()
+                params_point = pointer(params)
+                return_status = self._dirp_get_measurement_params(
+                    handle,
+                    params_point,
+                )
+                if return_status != Thermal.DIRP_SUCCESS:
+                    raise RuntimeError(
+                        f"dirp_get_measurement_params failed for "
+                        f"{filepath_image}: {return_status}"
+                    )
 
-        if self._dtype.__name__ == np.float32.__name__:
-            data = np.zeros(image_width * image_height, dtype=np.float32)
-            data_ptr = data.ctypes.data_as(POINTER(c_float))
-            data_size = c_int32(image_width * image_height * sizeof(c_float))
-            assert self._dirp_measure_ex(handle, data_ptr, data_size) == Thermal.DIRP_SUCCESS
-            temp = np.reshape(data, (image_height, image_width))
-        elif self._dtype.__name__ == np.int16.__name__:
-            data = np.zeros(image_width * image_height, dtype=np.int16)
-            data_ptr = data.ctypes.data_as(POINTER(c_int16))
-            data_size = c_int32(image_width * image_height * sizeof(c_int16))
-            assert self._dirp_measure(handle, data_ptr, data_size) == Thermal.DIRP_SUCCESS
-            temp = np.reshape(data, (image_height, image_width)) / 10
-        else:
-            raise ValueError
-        assert self._dirp_destroy(handle) == Thermal.DIRP_SUCCESS
+                if isinstance(object_distance, (float, int)):
+                    params.distance = object_distance
+                if isinstance(relative_humidity, (float, int)):
+                    params.humidity = relative_humidity
+                if isinstance(emissivity, (float, int)):
+                    params.emissivity = emissivity
+                if isinstance(reflected_apparent_temperature, (float, int)):
+                    params.reflection = reflected_apparent_temperature
+
+                return_status = self._dirp_set_measurement_params(handle, params)
+                if return_status != Thermal.DIRP_SUCCESS:
+                    raise RuntimeError(
+                        f"dirp_set_measurement_params failed for "
+                        f"{filepath_image}: {return_status}"
+                    )
+
+            if self._dtype.__name__ == np.float32.__name__:
+                data = np.zeros(image_width * image_height, dtype=np.float32)
+                data_ptr = data.ctypes.data_as(POINTER(c_float))
+                data_size = c_int32(
+                    image_width * image_height * sizeof(c_float)
+                )
+                return_status = self._dirp_measure_ex(
+                    handle,
+                    data_ptr,
+                    data_size,
+                )
+                if return_status != Thermal.DIRP_SUCCESS:
+                    raise RuntimeError(
+                        f"dirp_measure_ex failed for {filepath_image}: "
+                        f"{return_status}"
+                    )
+                temp = np.reshape(data, (image_height, image_width))
+            elif self._dtype.__name__ == np.int16.__name__:
+                data = np.zeros(image_width * image_height, dtype=np.int16)
+                data_ptr = data.ctypes.data_as(POINTER(c_int16))
+                data_size = c_int32(
+                    image_width * image_height * sizeof(c_int16)
+                )
+                return_status = self._dirp_measure(
+                    handle,
+                    data_ptr,
+                    data_size,
+                )
+                if return_status != Thermal.DIRP_SUCCESS:
+                    raise RuntimeError(
+                        f"dirp_measure failed for {filepath_image}: "
+                        f"{return_status}"
+                    )
+                temp = np.reshape(data, (image_height, image_width)) / 10
+            else:
+                raise ValueError(f"Unsupported thermal dtype: {self._dtype}")
+        finally:
+            destroy_status = self._dirp_destroy(handle)
+            if (
+                destroy_status != Thermal.DIRP_SUCCESS
+                and sys.exc_info()[0] is None
+            ):
+                raise RuntimeError(
+                    f"dirp_destroy failed for {filepath_image}: "
+                    f"{destroy_status}"
+                )
 
         return np.array(temp, dtype=self._dtype)

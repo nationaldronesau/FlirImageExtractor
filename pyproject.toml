@@ -55,6 +55,9 @@ pre-commit = "2.21.0"
 prompt-toolkit = "^3.0.47"
 
 
+[tool.poetry.group.extras]
+optional = true
+
 [tool.poetry.group.extras.dependencies]
 wxpython = {version = "^4.2.0", optional = true}
 m2r = "^0.3.1"

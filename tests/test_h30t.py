@@ -1,6 +1,10 @@
+import hashlib
+import io
+import zipfile
 from ctypes import sizeof, c_float
 
 import numpy as np
+import pytest
 
 from flirimageextractor import thermal
 from flirimageextractor.thermal import Thermal
@@ -144,3 +148,127 @@ def test_dirp2_uses_resolution_reported_by_sdk(tmp_path):
 
     assert result.shape == (1024, 1280)
     assert measured_sizes == [1280 * 1024 * sizeof(c_float)]
+
+
+def test_sdk_download_is_verified_and_atomically_installed(
+    monkeypatch,
+    tmp_path,
+):
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w") as sdk_zip:
+        for relative_path in [
+            "libdirp.so",
+            "libv_dirp.so",
+            "libv_iirp.so",
+            "libv_hirp.so",
+        ]:
+            sdk_zip.writestr(
+                "dji_thermal_sdk_v1.7/linux/release_x64/"
+                + relative_path,
+                b"sdk",
+            )
+    archive = archive_buffer.getvalue()
+
+    class FakeResponse:
+        content = archive
+
+        def raise_for_status(self):
+            return None
+
+    requested = {}
+
+    def fake_get(url, **kwargs):
+        requested["url"] = url
+        requested.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(thermal.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        thermal.platform,
+        "architecture",
+        lambda: ("64bit", ""),
+    )
+    monkeypatch.setattr(
+        thermal,
+        "__file__",
+        str(tmp_path / "flirimageextractor" / "thermal.py"),
+    )
+    monkeypatch.setattr(thermal.requests, "get", fake_get)
+    monkeypatch.setattr(
+        thermal,
+        "DJI_EXECUTABLES_SHA256",
+        hashlib.sha256(archive).hexdigest(),
+    )
+
+    libdirp, _, _, _ = thermal.get_default_filepaths()
+
+    assert requested["timeout"] == (15, 180)
+    assert requested["stream"] is True
+    assert libdirp.endswith(
+        "dji_thermal_sdk_v1.7/linux/release_x64/libdirp.so"
+    )
+    assert not list((tmp_path / "dji_executables").glob("tmp*"))
+
+
+def test_sdk_download_rejects_unexpected_archive(monkeypatch, tmp_path):
+    class FakeResponse:
+        content = b"not-the-pinned-sdk"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(thermal.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        thermal.platform,
+        "architecture",
+        lambda: ("64bit", ""),
+    )
+    monkeypatch.setattr(
+        thermal,
+        "__file__",
+        str(tmp_path / "flirimageextractor" / "thermal.py"),
+    )
+    monkeypatch.setattr(
+        thermal.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="integrity verification",
+    ):
+        thermal.get_default_filepaths()
+
+
+def test_dirp2_destroys_handle_when_measurement_fails(tmp_path):
+    image_path = tmp_path / "DJI_0001_R.JPG"
+    image_path.write_bytes(b"rjpeg")
+    parser = Thermal.__new__(Thermal)
+    parser._dtype = np.float32
+    destroyed = []
+
+    parser._dirp_create_from_rjpeg = (
+        lambda raw, raw_size, handle: Thermal.DIRP_SUCCESS
+    )
+    parser._dirp_get_rjpeg_version = (
+        lambda handle, version: Thermal.DIRP_SUCCESS
+    )
+
+    def get_resolution(handle, resolution):
+        resolution.width = 1280
+        resolution.height = 1024
+        return Thermal.DIRP_SUCCESS
+
+    parser._dirp_get_rjpeg_resolution = get_resolution
+    parser._dirp_measure_ex = (
+        lambda handle, data, data_size: Thermal.DIRP_ERROR_ADVANCED
+    )
+    parser._dirp_destroy = (
+        lambda handle: destroyed.append(handle) or Thermal.DIRP_SUCCESS
+    )
+
+    with pytest.raises(RuntimeError, match="dirp_measure_ex failed"):
+        parser.parse_dirp2(str(image_path), m2ea_mode=True)
+
+    assert len(destroyed) == 1
